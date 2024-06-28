@@ -19,6 +19,10 @@ impl HashAlgorithm {
             HashAlgorithm::Sha256 => sha256(s),
         }
     }
+
+    pub fn supported_algorithms() -> Vec<HashAlgorithm> {
+        vec![HashAlgorithm::CkbHash, HashAlgorithm::Sha256]
+    }
 }
 
 impl Default for HashAlgorithm {
