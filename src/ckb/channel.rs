@@ -398,7 +398,7 @@ impl<S> ChannelActor<S> {
                     state.local_shutdown_script = Some(funding_source_lock_script.clone());
                     state.local_shutdown_fee_rate = Some(0);
                     flags = flags | ShuttingDownFlags::OUR_SHUTDOWN_SENT;
-                    debug!("Auto accept shutdown ...");
+                    debug!("Auto accept shutdown ... : {:?}", flags);
                 }
                 state.update_state(ChannelState::ShuttingDown(flags));
                 state.maybe_transition_to_shutdown(&self.network)?;
@@ -644,7 +644,10 @@ impl<S> ChannelActor<S> {
                 debug!("Handling shutdown command in ChannelReady state");
                 ShuttingDownFlags::empty()
             }
-            ChannelState::ShuttingDown(flags) => flags,
+            ChannelState::ShuttingDown(flags) => {
+                debug!("we already in shutting down state: {:?}", &flags);
+                return Ok(());
+            }
             _ => {
                 debug!("Handling shutdown command in state {:?}", &state.state);
                 return Err(ProcessingChannelError::InvalidState(
