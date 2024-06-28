@@ -4564,8 +4564,9 @@ mod tests {
             .expect("accept channel success");
     }
 
-    #[tokio::test]
-    async fn test_channel_with_simple_update_operation() {
+    async fn do_test_channel_with_simple_update_operation(algorithm: HashAlgorithm) {
+        let _ = env_logger::try_init();
+
         let [mut node_a, mut node_b] = NetworkNode::new_n_interconnected_nodes(2)
             .await
             .try_into()
@@ -4645,7 +4646,6 @@ mod tests {
             .await;
 
         let preimage = [1; 32];
-        let algorithm = HashAlgorithm::CkbHash;
         let digest = algorithm.hash(&preimage);
         let tlc_amount = 1000000000;
 
@@ -4656,7 +4656,7 @@ mod tests {
                     command: ChannelCommand::AddTlc(
                         AddTlcCommand {
                             amount: tlc_amount,
-                            hash_algorithm: HashAlgorithm::CkbHash,
+                            hash_algorithm: algorithm,
                             payment_hash: Some(digest.into()),
                             expiry: LockTime::new(100),
                             preimage: None,
@@ -4756,6 +4756,16 @@ mod tests {
             node_b.trace_tx(node_b_shutdown_tx.clone()).await,
             Status::Committed
         );
+    }
+
+    #[tokio::test]
+    async fn test_channel_with_simple_update_operation_ckbhash() {
+        do_test_channel_with_simple_update_operation(HashAlgorithm::CkbHash).await
+    }
+
+    #[tokio::test]
+    async fn test_channel_with_simple_update_operation_sha256() {
+        do_test_channel_with_simple_update_operation(HashAlgorithm::Sha256).await
     }
 
     #[tokio::test]
