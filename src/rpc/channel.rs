@@ -17,11 +17,11 @@ use jsonrpsee::{
     proc_macros::rpc,
     types::{error::CALL_EXECUTION_FAILED_CODE, ErrorObjectOwned},
 };
-use log::error;
 use ractor::{call, ActorRef};
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
 use tentacle::secio::PeerId;
+use tracing::error;
 
 #[serde_as]
 #[derive(Serialize, Deserialize, Debug)]
@@ -196,7 +196,7 @@ where
             NetworkActorMessage::Command(NetworkActorCommand::OpenChannel(
                 OpenChannelCommand {
                     peer_id: params.peer_id.clone(),
-                    funding_amount: params.funding_amount.clone(),
+                    funding_amount: params.funding_amount,
                     funding_udt_type_script: params
                         .funding_udt_type_script
                         .clone()

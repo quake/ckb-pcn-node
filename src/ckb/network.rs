@@ -2,13 +2,14 @@ use ckb_jsonrpc_types::Status;
 use ckb_types::core::TransactionView;
 use ckb_types::packed::{OutPoint, Script, Transaction};
 use ckb_types::prelude::{IntoTransactionView, Pack, Unpack};
-use log::{debug, error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use ractor::{
     async_trait as rasync_trait, call_t, Actor, ActorCell, ActorProcessingErr, ActorRef,
     RpcReplyPort, SupervisionEvent,
 };
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 use tentacle::secio::SecioKeyPair;
 
@@ -59,10 +60,10 @@ pub const DEFAULT_CHAIN_ACTOR_TIMEOUT: u64 = 60000;
 // We may later relax this assumption. At the moment, if the chain actor fails, we
 // should panic with this message, and later we may find all references to this message
 // to make sure that we handle the case where the chain actor is not alive.
-const ASSUME_CHAIN_ACTOR_ALWAYS_ALIVE_FOR_NOW: &'static str =
+const ASSUME_CHAIN_ACTOR_ALWAYS_ALIVE_FOR_NOW: &str =
     "We currently assume that chain actor is always alive, but it failed. This is a known issue.";
 
-const ASSUME_NETWORK_MYSELF_ALIVE: &'static str = "network actor myself alive";
+const ASSUME_NETWORK_MYSELF_ALIVE: &str = "network actor myself alive";
 
 #[derive(Debug)]
 pub struct OpenChannelResponse {
@@ -279,7 +280,7 @@ where
             // We should process OpenChannel message here because there is no channel corresponding
             // to the channel id in the message yet.
             CFNMessage::OpenChannel(open_channel) => {
-                let temp_channel_id = open_channel.channel_id.clone();
+                let temp_channel_id = open_channel.channel_id;
                 match state
                     .on_open_channel_msg(peer_id, open_channel.clone())
                     .await
@@ -389,10 +390,10 @@ where
                     if let Some(channel) = state.channels.remove(&old) {
                         debug!("Channel accepted: {:?} -> {:?}", old, new);
                         state.channels.insert(new, channel);
-                        state.session_channels_map.get_mut(&session).map(|set| {
+                        if let Some(set) = state.session_channels_map.get_mut(&session) {
                             set.remove(&old);
                             set.insert(new);
-                        });
+                        };
 
                         debug!("Starting funding channel");
                         // TODO: Here we implies the one who receives AcceptChannel message
@@ -404,13 +405,12 @@ where
                                     Default::default(),
                                     FundingRequest {
                                         script,
-                                        udt_type_script: udt_funding_script.clone(),
+                                        udt_type_script: udt_funding_script,
                                         local_amount: local as u64,
-                                        funding_fee_rate: funding_fee_rate,
+                                        funding_fee_rate,
                                         remote_amount: remote as u64,
-                                        local_reserved_ckb_amount: local_reserved_ckb_amount as u64,
-                                        remote_reserved_ckb_amount: remote_reserved_ckb_amount
-                                            as u64,
+                                        local_reserved_ckb_amount,
+                                        remote_reserved_ckb_amount,
                                     },
                                 ),
                             ))
@@ -461,7 +461,7 @@ where
                 .expect(ASSUME_CHAIN_ACTOR_ALWAYS_ALIVE_FOR_NOW)
                 {
                     Ok(_) => {
-                        info!("Closing transaction sent to the network: {:?}", tx);
+                        info!("Closing transaction sent to the network: {:x}", tx.hash());
                     }
                     Err(err) => {
                         error!("Failed to send closing transaction to the network: {}", err);
@@ -636,7 +636,7 @@ where
                             &funding_tx,
                             partial_witnesses
                                 .iter()
-                                .map(|x| hex::encode(x))
+                                .map(hex::encode)
                                 .collect::<Vec<_>>()
                         );
                         let funding_tx = funding_tx
@@ -785,6 +785,18 @@ pub struct NetworkActorState {
     auto_accept_channel_ckb_funding_amount: u64,
 }
 
+static CHANNEL_ACTOR_NAME_PREFIX: AtomicU64 = AtomicU64::new(0u64);
+
+// ractor requires that the actor name is unique, so we add a prefix to the actor name.
+fn generate_channel_actor_name(local_peer_id: &PeerId, remote_peer_id: &PeerId) -> String {
+    format!(
+        "Channel-{} {} <-> {}",
+        CHANNEL_ACTOR_NAME_PREFIX.fetch_add(1, Ordering::AcqRel),
+        local_peer_id,
+        remote_peer_id
+    )
+}
+
 impl NetworkActorState {
     pub fn generate_channel_seed(&mut self) -> [u8; 32] {
         let channel_user_id = self.channels.len();
@@ -824,7 +836,7 @@ impl NetworkActorState {
         let seed = self.generate_channel_seed();
         let (tx, rx) = oneshot::channel::<Hash256>();
         let channel = Actor::spawn_linked(
-            None,
+            Some(generate_channel_actor_name(&self.peer_id, &peer_id)),
             ChannelActor::new(peer_id.clone(), network.clone(), store),
             ChannelInitializationParameter::OpenChannel(OpenChannelParameter {
                 funding_amount,
@@ -875,7 +887,7 @@ impl NetworkActorState {
         let seed = self.generate_channel_seed();
         let (tx, rx) = oneshot::channel::<Hash256>();
         let channel = Actor::spawn_linked(
-            None,
+            Some(generate_channel_actor_name(&self.peer_id, &peer_id)),
             ChannelActor::new(peer_id.clone(), network.clone(), store),
             ChannelInitializationParameter::AcceptChannel(AcceptChannelParameter {
                 funding_amount,
@@ -1000,10 +1012,10 @@ impl NetworkActorState {
     ) {
         self.peer_session_map.insert(peer_id.clone(), session.id);
 
-        for channel_id in store.get_channel_ids_by_peer(&peer_id) {
-            debug!("Reestablishing channel {:?}", &channel_id);
+        for channel_id in store.get_channel_ids_by_peer(peer_id) {
+            debug!("Reestablishing channel {:x}", &channel_id);
             if let Ok((channel, _)) = Actor::spawn_linked(
-                None,
+                Some(generate_channel_actor_name(&self.peer_id, peer_id)),
                 ChannelActor::new(peer_id.clone(), self.network.clone(), store.clone()),
                 ChannelInitializationParameter::ReestablishChannel(channel_id),
                 self.network.get_cell(),
@@ -1039,17 +1051,17 @@ impl NetworkActorState {
             self.channels.insert(id, actor);
             self.session_channels_map
                 .entry(session)
-                .or_insert_with(HashSet::new)
+                .or_default()
                 .insert(id);
         }
     }
 
     fn on_channel_closed(&mut self, id: &Hash256, peer_id: &PeerId) {
-        self.channels.remove(&id);
+        self.channels.remove(id);
         if let Some(session) = self.get_peer_session(peer_id) {
-            self.session_channels_map.get_mut(&session).map(|set| {
-                set.remove(&id);
-            });
+            if let Some(set) = self.session_channels_map.get_mut(&session) {
+                set.remove(id);
+            };
         }
     }
 
@@ -1061,7 +1073,7 @@ impl NetworkActorState {
         self.check_open_ckb_parameters(&open_channel)?;
 
         if let Some(udt_type_script) = &open_channel.funding_udt_type_script {
-            if !check_udt_script(&udt_type_script) {
+            if !check_udt_script(udt_type_script) {
                 return Err(ProcessingChannelError::InvalidParameter(format!(
                     "Invalid UDT type script: {:?}",
                     udt_type_script
@@ -1128,7 +1140,7 @@ impl NetworkActorState {
         .expect(ASSUME_CHAIN_ACTOR_ALWAYS_ALIVE_FOR_NOW)
         .expect("valid funding tx");
 
-        let hash = transaction.hash().into();
+        let hash = transaction.hash();
 
         info!("Funding transactoin sent to the network: {}", hash);
 
@@ -1151,7 +1163,7 @@ impl NetworkActorState {
                 DEFAULT_CHAIN_ACTOR_TIMEOUT,
                 request.clone()
             ) {
-                Ok(status) if status == Status::Committed => {
+                Ok(Status::Committed) => {
                     info!("Funding transaction {:?} confirmed", &request.tx_hash,);
                     NetworkActorEvent::FundingTransactionConfirmed(outpoint)
                 }
@@ -1236,7 +1248,7 @@ where
                 .as_slice(),
             b"CFN_NETWORK_ENTROPY",
         );
-        let secio_kp = SecioKeyPair::from(kp.into());
+        let secio_kp = SecioKeyPair::from(kp);
         let secio_pk = secio_kp.public_key();
         let handle = Handle::new(myself.clone());
         let mut service = ServiceBuilder::default()
@@ -1454,8 +1466,14 @@ pub async fn start_ckb<S: ChannelActorStateStore + Clone + Send + Sync + 'static
     root_actor: ActorCell,
     store: S,
 ) -> ActorRef<NetworkActorMessage> {
+    let secio_kp: SecioKeyPair = config
+        .read_or_generate_secret_key()
+        .expect("read or generate secret key")
+        .into();
+    let my_peer_id = PeerId::from_public_key(&secio_kp.public_key());
+
     let (actor, _handle) = Actor::spawn_linked(
-        Some("network actor".to_string()),
+        Some(format!("Network {}", my_peer_id)),
         NetworkActor::new(event_sender, chain_actor, store),
         (config, tracker),
         root_actor,
