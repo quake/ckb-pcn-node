@@ -141,7 +141,6 @@ pub enum NetworkServiceEvent {
     ChannelCreated(PeerId, Hash256),
     ChannelPendingToBeAccepted(PeerId, Hash256),
     ChannelReady(PeerId, Hash256),
-    ChannelShutDown(PeerId, Hash256),
     ChannelClosed(PeerId, Hash256, TransactionView),
     // We should sign a commitment transaction and send it to the other party.
     CommitmentSignaturePending(PeerId, Hash256, u64),
@@ -187,8 +186,6 @@ pub enum NetworkActorEvent {
     ),
     /// A channel is ready to use.
     ChannelReady(Hash256, PeerId),
-    /// A channel is being shutting down.
-    ChannelShutdown(Hash256, PeerId),
     /// A channel is already closed.
     ChannelClosed(Hash256, PeerId, TransactionView),
 
@@ -429,20 +426,6 @@ where
                         NetworkActorEvent::NetworkServiceEvent(NetworkServiceEvent::ChannelReady(
                             peer_id, channel_id,
                         )),
-                    ))
-                    .expect(ASSUME_NETWORK_MYSELF_ALIVE);
-            }
-            NetworkActorEvent::ChannelShutdown(channel_id, peer_id) => {
-                info!(
-                    "Channel ({:?}) to peer {:?} is being shutdown.",
-                    channel_id, peer_id
-                );
-                // Notify outside observers.
-                myself
-                    .send_message(NetworkActorMessage::new_event(
-                        NetworkActorEvent::NetworkServiceEvent(
-                            NetworkServiceEvent::ChannelShutDown(peer_id, channel_id),
-                        ),
                     ))
                     .expect(ASSUME_NETWORK_MYSELF_ALIVE);
             }
