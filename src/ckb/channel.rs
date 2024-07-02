@@ -649,7 +649,10 @@ impl<S> ChannelActor<S> {
                 debug!("Handling shutdown command in ChannelReady state");
                 ShuttingDownFlags::empty()
             }
-            ChannelState::ShuttingDown(flags) => flags,
+            ChannelState::ShuttingDown(flags) => {
+                debug!("we already in shutting down state: {:?}", &flags);
+                return Ok(());
+            }
             _ => {
                 debug!("Handling shutdown command in state {:?}", &state.state);
                 return Err(ProcessingChannelError::InvalidState(
